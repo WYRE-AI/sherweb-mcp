@@ -7,12 +7,12 @@ A Model Context Protocol (MCP) server for Sherweb cloud marketplace and partner 
 
 This is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that connects Claude (or any MCP-compatible AI) to your Sherweb environment.
 
-> **Part of the [MSP Claude Plugins](https://github.com/wyre-technology) ecosystem** — a growing suite of AI integrations for the MSP stack. Built by MSPs, for MSPs.
+> **Part of the [MSP Claude Plugins](https://github.com/WYRE-AI) ecosystem** — a growing suite of AI integrations for the MSP stack. Built by MSPs, for MSPs.
 
 ## Installation
 
 ```bash
-npm install @wyre-technology/sherweb-mcp
+npm install @wyre-ai/sherweb-mcp
 ```
 
 ## Configuration
@@ -37,7 +37,7 @@ Add to your Claude Desktop `claude_desktop_config.json`:
   "mcpServers": {
     "sherweb-mcp": {
       "command": "npx",
-      "args": ["@wyre-technology/sherweb-mcp"],
+      "args": ["@wyre-ai/sherweb-mcp"],
       "env": {
         "SHERWEB_CLIENT_ID": "your-sherweb-client-id"
         "SHERWEB_CLIENT_SECRET": "your-sherweb-client-secret"
@@ -55,7 +55,7 @@ claude mcp add sherweb-mcp \
   -e SHERWEB_CLIENT_ID=your-value \
   -e SHERWEB_CLIENT_SECRET=your-value \
   -e SHERWEB_SUBSCRIPTION_KEY=your-value \
-  -- npx -y @wyre-technology/sherweb-mcp
+  -- npx -y @wyre-ai/sherweb-mcp
 ```
 
 ### Docker
@@ -98,7 +98,7 @@ needed.
 
 ```bash
 # Clone the repository
-git clone https://github.com/wyre-technology/sherweb-mcp.git
+git clone https://github.com/WYRE-AI/sherweb-mcp.git
 cd sherweb-mcp
 
 # Install dependencies

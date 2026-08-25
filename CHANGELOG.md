@@ -3,12 +3,12 @@
 
 ### Bug Fixes
 
-* align package name to sherweb-mcp convention ([7efe4c5](https://github.com/wyre-technology/sherweb-mcp/commit/7efe4c56cbd09c9e0bb4142f5a71a9d5eb4be676))
+* align package name to sherweb-mcp convention ([7efe4c5](https://github.com/WYRE-AI/sherweb-mcp/commit/7efe4c56cbd09c9e0bb4142f5a71a9d5eb4be676))
 
 
 ### Features
 
-* initial scaffold with lazy loading support ([aa375d0](https://github.com/wyre-technology/sherweb-mcp/commit/aa375d00e2d9d961a601578ee2437a5567e9e755))
+* initial scaffold with lazy loading support ([aa375d0](https://github.com/WYRE-AI/sherweb-mcp/commit/aa375d00e2d9d961a601578ee2437a5567e9e755))
 
 # Changelog
 
