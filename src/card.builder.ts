@@ -114,9 +114,10 @@ function fee(amount: unknown, currency: string | undefined): string | undefined 
 /**
  * Build the renderable card from a sherweb_subscriptions_get payload. The
  * Sherweb API returns human-readable strings directly (productName, status,
- * billingCycle), so no id→label lookups are needed; the customer display name
- * is resolved best-effort via the /customers/{id} endpoint the server already
- * uses for sherweb_customers_get.
+ * billingCycle), so no id→label lookups are needed. The subscription payload
+ * carries no customer name, so the caller supplies one best-effort via
+ * `lookupCustomer` — Sherweb has no single-customer endpoint, so that resolves
+ * against the full /customers collection.
  */
 export async function buildSubscriptionCard(
   subscription: Record<string, unknown>,

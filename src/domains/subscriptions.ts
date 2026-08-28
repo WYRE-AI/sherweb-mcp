@@ -1,19 +1,41 @@
 /**
  * Subscriptions domain tools for Sherweb MCP Server
  *
- * Handles subscription management and quantity changes.
+ * Handles subscription listing, detail lookup, and quantity amendments.
  * Uses the Service Provider API (v1 Beta): https://api.sherweb.com/service-provider/v1
+ *
+ * Sherweb keys subscriptions off a `customerId` query parameter rather than a
+ * nested customer path, and exposes no single-subscription endpoint — detail
+ * lookup reads the customer's collection and selects the match.
+ *
+ * Quantity changes are asynchronous: POSTing an amendment returns an
+ * amendment ID plus a tracking ID, and the caller polls
+ * sherweb_subscriptions_amendment_status for the outcome.
  */
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { DomainHandler, CallToolResult } from "../utils/types.js";
+import {
+  type DomainHandler,
+  type CallToolResult,
+  type ItemCollection,
+  errorResult,
+  findByKey,
+  jsonResult,
+} from "../utils/types.js";
 import { serviceProviderRequest } from "../utils/client.js";
-import { elicitText, elicitConfirmation } from "../utils/elicitation.js";
+import { elicitConfirmation } from "../utils/elicitation.js";
 import { logger } from "../utils/logger.js";
+import { findCustomer } from "./customers.js";
 import {
   buildSubscriptionCard,
   SUBSCRIPTION_CARD_META,
 } from "../card.builder.js";
+
+/** Documented response of a successful amendment submission. */
+interface AmendmentReceipt {
+  subscriptionsAmendmentId?: string;
+  trackingId?: { requestTrackingId?: string };
+}
 
 /**
  * Subscription domain tool definitions
@@ -23,21 +45,13 @@ function getTools(): Tool[] {
     {
       name: "sherweb_subscriptions_list",
       description:
-        "List subscriptions for a customer. Returns subscription details including product, quantity, status, and billing cycle.",
+        "List a customer's subscriptions with product name, SKU, quantity, billing cycle, purchase date, fees and commitment term.",
       inputSchema: {
         type: "object",
         properties: {
           customerId: {
             type: "string",
-            description: "The customer ID to list subscriptions for (required)",
-          },
-          page: {
-            type: "number",
-            description: "Page number for pagination (default: 1)",
-          },
-          pageSize: {
-            type: "number",
-            description: "Number of items per page (default: 50)",
+            description: "The customer's unique ID (UUID)",
           },
         },
         required: ["customerId"],
@@ -46,18 +60,18 @@ function getTools(): Tool[] {
     {
       name: "sherweb_subscriptions_get",
       description:
-        "Get detailed information about a specific subscription including product details, pricing, quantity, and renewal dates.",
+        "Get one subscription's full details. Sherweb exposes subscriptions only per customer, so this reads that customer's subscription details and selects the match.",
       _meta: SUBSCRIPTION_CARD_META,
       inputSchema: {
         type: "object",
         properties: {
           customerId: {
             type: "string",
-            description: "The customer ID",
+            description: "The customer's unique ID (UUID)",
           },
           subscriptionId: {
             type: "string",
-            description: "The unique subscription ID",
+            description: "The subscription's unique ID (UUID)",
           },
         },
         required: ["customerId", "subscriptionId"],
@@ -66,17 +80,17 @@ function getTools(): Tool[] {
     {
       name: "sherweb_subscriptions_change_quantity",
       description:
-        "Change the quantity (number of seats/licenses) for a subscription. This modifies the subscription and may affect billing.",
+        "Change a subscription's quantity (seats/licenses). This affects billing. The change is submitted asynchronously — it returns a tracking ID to poll with sherweb_subscriptions_amendment_status, not a finished result.",
       inputSchema: {
         type: "object",
         properties: {
           customerId: {
             type: "string",
-            description: "The customer ID",
+            description: "The customer's unique ID (UUID)",
           },
           subscriptionId: {
             type: "string",
-            description: "The subscription ID to modify",
+            description: "The subscription to amend (UUID)",
           },
           quantity: {
             type: "number",
@@ -84,6 +98,22 @@ function getTools(): Tool[] {
           },
         },
         required: ["customerId", "subscriptionId", "quantity"],
+      },
+    },
+    {
+      name: "sherweb_subscriptions_amendment_status",
+      description:
+        "Check the status of a submitted subscription amendment using the tracking ID returned by sherweb_subscriptions_change_quantity. Returns Unknown, Queued, Processing, Success or Failure.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          trackingId: {
+            type: "string",
+            description:
+              "The requestTrackingId returned when the amendment was submitted",
+          },
+        },
+        required: ["trackingId"],
       },
     },
   ];
@@ -98,28 +128,15 @@ async function handleCall(
 ): Promise<CallToolResult> {
   switch (toolName) {
     case "sherweb_subscriptions_list": {
-      const { customerId, page, pageSize } = args as {
-        customerId: string;
-        page?: number;
-        pageSize?: number;
-      };
+      const { customerId } = args as { customerId: string };
 
-      const params: Record<string, string | number | boolean | undefined> = {};
-      if (page !== undefined) params.page = page;
-      if (pageSize !== undefined) params.pageSize = pageSize;
+      logger.info("API call: subscriptions.list", { customerId });
 
-      logger.info("API call: subscriptions.list", { customerId, params });
-
-      const response = await serviceProviderRequest(
-        `/customers/${customerId}/subscriptions`,
-        { params }
+      return jsonResult(
+        await serviceProviderRequest("/billing/subscriptions", {
+          params: { customerId },
+        })
       );
-
-      return {
-        content: [
-          { type: "text", text: JSON.stringify(response, null, 2) },
-        ],
-      };
     }
 
     case "sherweb_subscriptions_get": {
@@ -130,34 +147,42 @@ async function handleCall(
 
       logger.info("API call: subscriptions.get", { customerId, subscriptionId });
 
-      const response = await serviceProviderRequest(
-        `/customers/${customerId}/subscriptions/${subscriptionId}`
+      // The subscription-details payload carries no customer name, so the
+      // MCP Apps card needs a second, independent request. Start it now so it
+      // overlaps the details fetch instead of running after it. The catch
+      // keeps the not-found path below from surfacing an unhandled rejection.
+      const customerPromise = findCustomer(customerId).catch(() => undefined);
+
+      const response = await serviceProviderRequest<ItemCollection>(
+        "/billing/subscriptions/details",
+        { params: { customerId } }
       );
+      const subscription = findByKey(response.items, "id", subscriptionId);
+
+      if (!subscription) {
+        return errorResult(
+          `Subscription '${subscriptionId}' was not found for customer '${customerId}'. Use sherweb_subscriptions_list to see that customer's subscriptions.`
+        );
+      }
 
       // MCP Apps: attach the normalized card payload the ui:// subscription
       // card renders from. Best-effort — any failure just means no card, the
       // model-visible JSON is otherwise unchanged.
-      let payload: unknown = response;
-      if (response && typeof response === "object" && !Array.isArray(response)) {
-        try {
-          const card = await buildSubscriptionCard(
-            response as Record<string, unknown>,
-            customerId,
-            () => serviceProviderRequest(`/customers/${customerId}`)
-          );
-          if (card) {
-            payload = { ...(response as Record<string, unknown>), _card: card };
-          }
-        } catch {
-          // Card building never affects the tool result.
+      let payload: unknown = subscription;
+      try {
+        const card = await buildSubscriptionCard(
+          subscription,
+          customerId,
+          () => customerPromise
+        );
+        if (card) {
+          payload = { ...subscription, _card: card };
         }
+      } catch {
+        // Card building never affects the tool result.
       }
 
-      return {
-        content: [
-          { type: "text", text: JSON.stringify(payload, null, 2) },
-        ],
-      };
+      return jsonResult(payload);
     }
 
     case "sherweb_subscriptions_change_quantity": {
@@ -173,47 +198,56 @@ async function handleCall(
       );
 
       if (confirmed === false) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Quantity change cancelled by user.",
-            },
-          ],
-        };
+        return jsonResult({ cancelled: true, reason: "Cancelled by user." });
       }
 
-      logger.info("API call: subscriptions.changeQuantity", {
+      logger.info("API call: subscriptions.createAmendment", {
         customerId,
         subscriptionId,
         quantity,
       });
 
-      const response = await serviceProviderRequest(
-        `/customers/${customerId}/subscriptions/${subscriptionId}/change-quantity`,
+      const response = await serviceProviderRequest<AmendmentReceipt>(
+        "/billing/subscriptions/amendments",
         {
           method: "POST",
-          body: { quantity },
+          params: { customerId },
+          body: {
+            subscriptionAmendmentParameters: [
+              { subscriptionId, newQuantity: quantity },
+            ],
+          },
         }
       );
 
-      return {
-        content: [
-          { type: "text", text: JSON.stringify(response, null, 2) },
-        ],
-      };
+      const trackingId = response.trackingId?.requestTrackingId;
+
+      return jsonResult({
+        subscriptionsAmendmentId: response.subscriptionsAmendmentId,
+        trackingId,
+        note:
+          "The amendment was accepted but is processed asynchronously — it is not applied yet." +
+          (trackingId
+            ? ` Poll sherweb_subscriptions_amendment_status with trackingId '${trackingId}' to confirm the outcome.`
+            : " Sherweb returned no tracking ID, so the outcome cannot be polled."),
+      });
+    }
+
+    case "sherweb_subscriptions_amendment_status": {
+      const { trackingId } = args as { trackingId: string };
+
+      logger.info("API call: subscriptions.trackRequest", { trackingId });
+
+      // /tracking/{id} is Sherweb's generic request tracker, not a
+      // subscription-specific endpoint — it lives under this domain because
+      // amendments are currently the only async operation the server submits.
+      return jsonResult(
+        await serviceProviderRequest(`/tracking/${trackingId}`)
+      );
     }
 
     default:
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Unknown subscriptions tool: ${toolName}`,
-          },
-        ],
-        isError: true,
-      };
+      return errorResult(`Unknown subscriptions tool: ${toolName}`);
   }
 }
 

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Thin caller for the canonical reusable CI pipeline, the PR-time counterpart to
+# release.yml (which deliberately owns only the release path and defers
+# lint/test gating to "each repo's ci.yml concern"). Until this file existed
+# that concern had no owner: no workflow ran npm test, lint, or typecheck on a
+# PR, so the only signal was mcp-assert's boot-and-list canary. That is how the
+# endpoint-contract bug shipped — 33 green tests, none asserting an outbound
+# URL, and no automation running them either way.
+#
+# Caller jobs grant the token scopes the reusable jobs request (a reusable can
+# only reduce, never expand, caller-granted scope).
+jobs:
+  ci:
+    permissions:
+      contents: read
+      packages: read
+    uses: wyre-technology/.github/.github/workflows/mcp-server-ci.yml@adad2aa66a96942bbacac7ed9239017855c9b725
+    with:
+      # Node matrix, lint, typecheck, build, unit tests and the
+      # process.env credential-mutation guard are all on by default.
+      # Dockerfile breakage should surface at PR time, not at release time —
+      # release.yml builds the same image on main.
+      docker-smoke-test: true
+      # No integration-test script in this repo: every test is hermetic
+      # (fetch is stubbed), so there is no vendor secret to gate on.
+    secrets: inherit

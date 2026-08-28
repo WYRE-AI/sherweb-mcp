@@ -72,16 +72,22 @@ docker run \
 ## Available Domains
 
 ### Billing
-Billing management and invoice operations
+Distributor payable charges for a billing period, and detail for an individual
+charge. Sherweb returns charges only as a per-period collection, so both tools
+take an optional `date` identifying the period.
 
 ### Catalog
-Browse the Sherweb product catalog
+Browse the products a given customer can be sold. Catalogs are per-customer in
+Sherweb — there is no global product list — so `customerId` is required.
 
 ### Customers
-Customer account management
+List and look up customers, and read the receivable charges you bill them for a
+billing period.
 
 ### Subscriptions
-Subscription lifecycle management
+List a customer's subscriptions, get one subscription's details, and submit
+quantity amendments. Amendments are **asynchronous**: submitting returns a
+tracking ID, and `sherweb_subscriptions_amendment_status` reports the outcome.
 
 ## Interactive Subscription Card (MCP Apps)
 

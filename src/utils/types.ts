@@ -12,6 +12,48 @@ export type CallToolResult = {
   isError?: boolean;
 };
 
+/** A successful tool result carrying a pretty-printed JSON payload. */
+export function jsonResult(value: unknown): CallToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+  };
+}
+
+/** A failed tool result carrying a plain-text explanation. */
+export function errorResult(text: string): CallToolResult {
+  return { content: [{ type: "text", text }], isError: true };
+}
+
+/**
+ * A Sherweb collection response. Several Sherweb resources are only
+ * retrievable as a whole collection — there is no single-item endpoint — so
+ * handlers fetch the collection and select from it.
+ */
+export interface ItemCollection {
+  items?: Array<Record<string, unknown>>;
+}
+
+/** Select one item from a collection by a key, or undefined if absent. */
+export function findByKey(
+  items: Array<Record<string, unknown>> | undefined,
+  key: string,
+  value: string
+): Record<string, unknown> | undefined {
+  return (items ?? []).find((item) => item[key] === value);
+}
+
+/** Case-insensitive substring match, tolerant of non-string values. */
+export function matches(value: unknown, needle: string): boolean {
+  return String(value ?? "").toLowerCase().includes(needle);
+}
+
+/**
+ * Shared description of Sherweb's `date` query parameter. Sherweb returns
+ * charges per billing period and selects the period from any date inside it.
+ */
+export const DATE_PARAM_DESCRIPTION =
+  "Any date inside the desired billing period, format yyyy-MM-dd (UTC). Defaults to today. E.g. 2026-03-17 returns the period containing March 17.";
+
 /**
  * Domain handler interface
  */

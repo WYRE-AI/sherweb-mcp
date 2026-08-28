@@ -106,8 +106,15 @@ beforeAll(async () => {
     }
 
     if (url.startsWith(SHERWEB_DISTRIBUTOR_BASE)) {
+      // Shape of the real GetPayableCharges response: a billing period with a
+      // charge collection. The Distributor API has no per-charge endpoint, so
+      // sherweb_billing_charge_details selects from this collection.
       return new Response(
-        JSON.stringify({ chargeId: "chg_test_001", lineItems: [] }),
+        JSON.stringify({
+          periodFrom: "2026-03-01",
+          periodTo: "2026-03-31",
+          charges: [{ chargeId: "chg_test_001", chargeName: "Test charge" }],
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }

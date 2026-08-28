@@ -19,10 +19,10 @@
  *   - Headers: X-Sherweb-Client-ID, X-Sherweb-Client-Secret, X-Sherweb-Subscription-Key
  *
  * Domains:
- * - billing: Payable charges, billing periods, charge details, pricing
- * - customers: List customers, customer details, accounts receivable
- * - subscriptions: Subscription management, quantity changes
- * - catalog: Product catalog browsing (future capability)
+ * - billing: Distributor payable charges for a billing period, charge detail
+ * - customers: List/look up customers, and their receivable charges
+ * - subscriptions: List, detail, and asynchronous quantity amendments
+ * - catalog: Per-customer product catalog browsing
  */
 
 import {
@@ -44,8 +44,9 @@ import { getCredentials, runWithCredentials } from "./utils/client.js";
 import { logger } from "./utils/logger.js";
 import { setServerRef } from "./utils/server-ref.js";
 import {
-  TOOL_CATEGORIES,
+  DOMAIN_DESCRIPTIONS,
   findDomainForTool,
+  listCategories,
   routeIntent,
 } from "./utils/categories.js";
 import { HEALTH_RESPONSE, isHealthPath } from "./health.js";
@@ -55,14 +56,10 @@ import { verifyS2sHeader, S2S_HEADER } from "./s2s-verify.js";
 const S2S_SECRET = process.env.CONDUIT_S2S_SECRET || "";
 
 /**
- * Domain metadata for navigation
+ * Domain metadata for navigation. Single-sourced in utils/categories.ts so
+ * the navigation tool and the lazy-loading category meta-tools cannot drift.
  */
-const domainDescriptions: Record<DomainName, string> = {
-  billing: "Payable charges, billing periods, charge details, pricing",
-  customers: "List customers, customer details, accounts receivable",
-  subscriptions: "Subscription management, quantity changes",
-  catalog: "Product catalog browsing (future capability)",
-};
+const domainDescriptions = DOMAIN_DESCRIPTIONS;
 
 /**
  * Create a fresh MCP Server instance with all request handlers registered.
@@ -165,7 +162,7 @@ const metaTools: Tool[] = [
       properties: {
         category: {
           type: "string",
-          enum: Object.keys(TOOL_CATEGORIES),
+          enum: getAvailableDomains(),
           description:
             "The category to list tools for (e.g. billing, customers, subscriptions, catalog)",
         },
@@ -279,13 +276,7 @@ function setupHandlers(server: Server): void {
       // -----------------------------------------------------------------
 
       if (name === "sherweb_list_categories") {
-        const categories = Object.entries(TOOL_CATEGORIES).map(
-          ([categoryName, cat]) => ({
-            name: categoryName,
-            description: cat.description,
-            toolCount: cat.tools.length,
-          })
-        );
+        const categories = await listCategories();
         return {
           content: [
             {
@@ -303,7 +294,7 @@ function setupHandlers(server: Server): void {
             content: [
               {
                 type: "text",
-                text: `Invalid category: '${category}'. Available categories: ${Object.keys(TOOL_CATEGORIES).join(", ")}`,
+                text: `Invalid category: '${category}'. Available categories: ${getAvailableDomains().join(", ")}`,
               },
             ],
             isError: true,
@@ -320,7 +311,7 @@ function setupHandlers(server: Server): void {
               text: JSON.stringify(
                 {
                   category,
-                  description: TOOL_CATEGORIES[category].description,
+                  description: DOMAIN_DESCRIPTIONS[category],
                   tools: tools.map((t) => ({
                     name: t.name,
                     description: t.description,
@@ -357,7 +348,7 @@ function setupHandlers(server: Server): void {
           };
         }
 
-        const domain = findDomainForTool(toolName);
+        const domain = await findDomainForTool(toolName);
         if (!domain) {
           return {
             content: [
@@ -407,16 +398,16 @@ function setupHandlers(server: Server): void {
         }
 
         // Enrich suggestions with their category
-        const enriched = suggestions.map((toolName) => {
-          const domain = findDomainForTool(toolName);
-          return {
-            tool: toolName,
-            category: domain,
-            categoryDescription: domain
-              ? TOOL_CATEGORIES[domain].description
-              : null,
-          };
-        });
+        const enriched = await Promise.all(
+          suggestions.map(async (toolName) => {
+            const domain = await findDomainForTool(toolName);
+            return {
+              tool: toolName,
+              category: domain,
+              categoryDescription: domain ? DOMAIN_DESCRIPTIONS[domain] : null,
+            };
+          })
+        );
 
         return {
           content: [

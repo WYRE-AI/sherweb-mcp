@@ -4,15 +4,31 @@
  * Handles product catalog browsing.
  * Uses the Service Provider API (v1 Beta): https://api.sherweb.com/service-provider/v1
  *
- * Note: This is a future capability area. The Sherweb API may expand
- * its product catalog endpoints over time.
+ * Sherweb has no global product catalog — catalogs are scoped per customer,
+ * because available offers and terms differ by customer. The endpoint takes no
+ * query parameters, so search is applied client-side over the returned items.
  */
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { DomainHandler, CallToolResult } from "../utils/types.js";
+import {
+  type DomainHandler,
+  type CallToolResult,
+  errorResult,
+  jsonResult,
+  matches,
+} from "../utils/types.js";
 import { serviceProviderRequest } from "../utils/client.js";
-import { elicitText } from "../utils/elicitation.js";
 import { logger } from "../utils/logger.js";
+
+/** The parts of the CustomerCatalog response this handler reads. */
+interface CatalogItem {
+  sku?: string;
+  name?: Array<{ value?: string }>;
+}
+
+interface CustomerCatalog {
+  catalogItems?: CatalogItem[];
+}
 
 /**
  * Catalog domain tool definitions
@@ -22,26 +38,33 @@ function getTools(): Tool[] {
     {
       name: "sherweb_catalog_list_products",
       description:
-        "List available products in the Sherweb catalog. Browse the product catalog to see available services, SKUs, and pricing tiers.",
+        "List the products a specific customer can be sold, with SKU, localized name and description, billing cycle and commitment term. Catalogs are per-customer in Sherweb — there is no global product list.",
       inputSchema: {
         type: "object",
         properties: {
+          customerId: {
+            type: "string",
+            description:
+              "The customer whose catalog to browse (UUID). Required — offers differ per customer.",
+          },
           search: {
             type: "string",
-            description: "Search by product name or keyword",
-          },
-          page: {
-            type: "number",
-            description: "Page number for pagination (default: 1)",
-          },
-          pageSize: {
-            type: "number",
-            description: "Number of items per page (default: 50)",
+            description:
+              "Optional case-insensitive filter on SKU or product name. Sherweb returns the full catalog, so this is applied locally.",
           },
         },
+        required: ["customerId"],
       },
     },
   ];
+}
+
+/** Does a catalog item match the search needle, in any culture? */
+function itemMatches(item: CatalogItem, needle: string): boolean {
+  return (
+    matches(item.sku, needle) ||
+    (item.name ?? []).some((n) => matches(n.value, needle))
+  );
 }
 
 /**
@@ -53,47 +76,30 @@ async function handleCall(
 ): Promise<CallToolResult> {
   switch (toolName) {
     case "sherweb_catalog_list_products": {
-      let { search, page, pageSize } = args as {
+      const { customerId, search } = args as {
+        customerId: string;
         search?: string;
-        page?: number;
-        pageSize?: number;
       };
 
-      // Elicit search term if no filters provided
-      if (!search && page === undefined) {
-        const searchTerm = await elicitText(
-          "Would you like to search for a specific product? Enter a name or keyword, or leave blank to list all.",
-          "search",
-          "Enter a product name or keyword to search for"
-        );
-        if (searchTerm) search = searchTerm;
-      }
-
-      const params: Record<string, string | number | boolean | undefined> = {};
-      if (search) params.search = search;
-      if (page !== undefined) params.page = page;
-      if (pageSize !== undefined) params.pageSize = pageSize;
-
-      logger.info("API call: catalog.listProducts", { params });
-
-      const response = await serviceProviderRequest("/catalog/products", {
-        params,
+      logger.info("API call: catalog.getCustomerCatalog", {
+        customerId,
+        search,
       });
 
-      return {
-        content: [
-          { type: "text", text: JSON.stringify(response, null, 2) },
-        ],
-      };
+      const response = await serviceProviderRequest<CustomerCatalog>(
+        `/customer-catalogs/${customerId}`
+      );
+
+      const needle = (search ?? "").toLowerCase();
+      const catalogItems = (response.catalogItems ?? []).filter((item) =>
+        itemMatches(item, needle)
+      );
+
+      return jsonResult({ ...response, catalogItems });
     }
 
     default:
-      return {
-        content: [
-          { type: "text", text: `Unknown catalog tool: ${toolName}` },
-        ],
-        isError: true,
-      };
+      return errorResult(`Unknown catalog tool: ${toolName}`);
   }
 }
 
