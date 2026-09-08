@@ -18,7 +18,11 @@
  *     token *values* each tenant receives (not object identity).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { distributorRequest, runWithCredentials } from "./client.js";
+import {
+  distributorRequest,
+  runWithCredentials,
+  serviceProviderRequest,
+} from "./client.js";
 import { SHERWEB_AUTH_URL, type SherwebCredentials } from "./types.js";
 
 interface PingResult {
@@ -185,5 +189,121 @@ describe("Sherweb OAuth token cache — cross-tenant isolation", () => {
     // shared value by coincidence.
     expect(resultA).toEqual({ authHeader: "Bearer token-A-interleave" });
     expect(resultB).toEqual({ authHeader: "Bearer token-B-interleave" });
+  });
+});
+
+/**
+ * Regression coverage for the 2026-09-08 Epion incident: customers_list
+ * (500), catalog_list_products (404) and billing_payable_charges (404) all
+ * turned out to be a stale container still serving pre-#67 code — the
+ * request-line evidence needed to tell that from a still-open bug lived
+ * only in `logger.error`, not in the error message a caller (or an
+ * on-call engineer reading a bug report) actually sees. `handleApiError`
+ * now includes the method + URL that failed in every thrown message.
+ */
+describe("Sherweb API error messages include the failing request", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const creds: SherwebCredentials = {
+    clientId: "client",
+    clientSecret: "secret",
+    subscriptionKey: "sub-key",
+  };
+
+  function oauthResponse(): Response {
+    const payload = JSON.stringify({
+      access_token: "token",
+      expires_in: 3600,
+      token_type: "Bearer",
+    });
+    return {
+      ok: true,
+      status: 200,
+      text: async () => payload,
+      json: async () => JSON.parse(payload),
+    } as Response;
+  }
+
+  /** Sherweb's actual undocumented error responses carry no `message` field. */
+  function errorResponse(status: number, body: unknown = ""): Response {
+    const payload = typeof body === "string" ? body : JSON.stringify(body);
+    return {
+      ok: false,
+      status,
+      text: async () => payload,
+      json: async () => JSON.parse(payload),
+    } as Response;
+  }
+
+  function stubApiResponse(response: Response) {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === SHERWEB_AUTH_URL) return oauthResponse();
+      return response;
+    });
+  }
+
+  it("a bare 404 (matching Sherweb's undocumented error shape) names the method and full URL", async () => {
+    stubApiResponse(errorResponse(404));
+
+    await expect(
+      runWithCredentials(creds, () =>
+        serviceProviderRequest("/customer-catalogs/bad-id")
+      )
+    ).rejects.toThrow(
+      "Not found: HTTP 404 (GET https://api.sherweb.com/service-provider/v1/customer-catalogs/bad-id)"
+    );
+  });
+
+  it("a bare 500 names the method and full URL, including any query params that reached Sherweb", async () => {
+    stubApiResponse(errorResponse(500));
+
+    await expect(
+      runWithCredentials(creds, () =>
+        // Reproduces the pre-#67 shape: unsupported params sent to an
+        // endpoint that documents none of them.
+        serviceProviderRequest("/customers", {
+          params: { page: 1, pageSize: 50 },
+        })
+      )
+    ).rejects.toThrow(
+      "Sherweb API error (500): HTTP 500 (GET https://api.sherweb.com/service-provider/v1/customers?page=1&pageSize=50)"
+    );
+  });
+
+  it("a 404 with a documented `message` field still includes the request line alongside it", async () => {
+    stubApiResponse(errorResponse(404, { message: "Resource not found" }));
+
+    await expect(
+      runWithCredentials(creds, () =>
+        distributorRequest("/billing/payable-charges/does-not-exist")
+      )
+    ).rejects.toThrow(
+      "Not found: Resource not found (GET https://api.sherweb.com/distributor/v1/billing/payable-charges/does-not-exist)"
+    );
+  });
+
+  it("401/403/429 messages keep their guidance text and append the request line", async () => {
+    stubApiResponse(errorResponse(403));
+    await expect(
+      runWithCredentials(creds, () => distributorRequest("/billing/payable-charges"))
+    ).rejects.toThrow(
+      "Forbidden: HTTP 403. Insufficient permissions or incorrect scope. (GET https://api.sherweb.com/distributor/v1/billing/payable-charges)"
+    );
+
+    stubApiResponse(errorResponse(429));
+    await expect(
+      runWithCredentials(creds, () => distributorRequest("/billing/payable-charges"))
+    ).rejects.toThrow(
+      "Rate limit exceeded: HTTP 429. Please wait and retry. (GET https://api.sherweb.com/distributor/v1/billing/payable-charges)"
+    );
   });
 });

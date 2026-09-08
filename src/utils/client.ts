@@ -213,7 +213,7 @@ export async function distributorRequest<T>(
   }
 
   if (!response.ok) {
-    handleApiError(response.status, responseBody, url.toString(), creds);
+    handleApiError(response.status, responseBody, method, url.toString(), creds);
   }
 
   return responseBody as T;
@@ -276,18 +276,30 @@ export async function serviceProviderRequest<T>(
   }
 
   if (!response.ok) {
-    handleApiError(response.status, responseBody, url.toString(), creds);
+    handleApiError(response.status, responseBody, method, url.toString(), creds);
   }
 
   return responseBody as T;
 }
 
 /**
- * Handle API error responses with clear error messages
+ * Handle API error responses with clear error messages.
+ *
+ * Every thrown message includes the request line (method + URL) that
+ * produced it. A 2026-09-08 incident (Epion: customers_list 500,
+ * catalog_list_products 404, billing_payable_charges 404) turned out to be
+ * a stale deployment still serving pre-#67 code — the exact symptom a
+ * dead/wrong-shaped path produces — but the generic `HTTP 404` /
+ * `HTTP 500` messages this function used to throw gave no way to tell that
+ * from a genuine, still-open bug without reading server logs. Surfacing the
+ * request line in the error itself makes that distinction immediate: a
+ * caller (or on-call engineer) can see whether the failing path even
+ * matches what the current source calls.
  */
 function handleApiError(
   status: number,
   responseBody: unknown,
+  method: string,
   url: string,
   creds: SherwebCredentials
 ): never {
@@ -297,27 +309,30 @@ function handleApiError(
     "message" in responseBody
       ? String((responseBody as Record<string, unknown>).message)
       : `HTTP ${status}`;
+  const request = `${method} ${url}`;
 
-  logger.error("Sherweb API error", { status, url, message });
+  logger.error("Sherweb API error", { status, url, method, message });
 
   if (status === 401) {
     // Evict only this tenant's cached token on auth failure — never touch
     // other tenants' entries in the shared tokenCache.
     tokenCache.delete(tenantKey(creds));
     throw new Error(
-      `Authentication failed: ${message}. Check your SHERWEB_CLIENT_ID, SHERWEB_CLIENT_SECRET, and SHERWEB_SUBSCRIPTION_KEY.`
+      `Authentication failed: ${message}. Check your SHERWEB_CLIENT_ID, SHERWEB_CLIENT_SECRET, and SHERWEB_SUBSCRIPTION_KEY. (${request})`
     );
   }
   if (status === 403) {
     throw new Error(
-      `Forbidden: ${message}. Insufficient permissions or incorrect scope.`
+      `Forbidden: ${message}. Insufficient permissions or incorrect scope. (${request})`
     );
   }
   if (status === 404) {
-    throw new Error(`Not found: ${message}`);
+    throw new Error(`Not found: ${message} (${request})`);
   }
   if (status === 429) {
-    throw new Error(`Rate limit exceeded: ${message}. Please wait and retry.`);
+    throw new Error(
+      `Rate limit exceeded: ${message}. Please wait and retry. (${request})`
+    );
   }
-  throw new Error(`Sherweb API error (${status}): ${message}`);
+  throw new Error(`Sherweb API error (${status}): ${message} (${request})`);
 }
