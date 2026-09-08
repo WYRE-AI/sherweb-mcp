@@ -8,7 +8,13 @@
  * - OAuth 2.0 Client Credentials flow
  * - Token endpoint: https://api.sherweb.com/auth/oidc/connect/token
  * - Requires client_id, client_secret, and subscription_key (Ocp-Apim-Subscription-Key header)
- * - Scopes: "distributor" and "service-provider"
+ * - Scope is per-API, not combined: Sherweb's own Authorization API OpenAPI spec
+ *   ("you need to pass a scope depending of which API you are gonna call
+ *   afterwards") and its official sample code/Postman collection
+ *   (github.com/sherweb/Public-Apis) both request a single bare scope value
+ *   matching the destination API — "distributor" for the Distributor API,
+ *   "service-provider" for the Service Provider API. See DISTRIBUTOR_SCOPE /
+ *   SERVICE_PROVIDER_SCOPE below.
  * - Tokens valid for 3600 seconds
  *
  * Base URLs:
@@ -26,6 +32,16 @@ import {
 } from "./types.js";
 
 /**
+ * Sherweb's Authorization API grants a token scoped to exactly the API being
+ * called — never a combined value. Passing both together used to be this
+ * client's default (a single `authenticate()` call reused by both
+ * `distributorRequest` and `serviceProviderRequest`), which does not match
+ * any documented or sample usage; see the module doc comment above.
+ */
+const DISTRIBUTOR_SCOPE = "distributor";
+const SERVICE_PROVIDER_SCOPE = "service-provider";
+
+/**
  * OAuth2 token cache entry.
  */
 interface CachedToken {
@@ -34,7 +50,7 @@ interface CachedToken {
 }
 
 /**
- * OAuth2 token cache, keyed per tenant.
+ * OAuth2 token cache, keyed per tenant AND per scope.
  *
  * Credentials already flow per-request via AsyncLocalStorage (see
  * `credentialStore` below), but the OAuth *token* derived from those
@@ -48,6 +64,11 @@ interface CachedToken {
  * tenants when resolving raw credentials) so each tenant only ever reads
  * back its own token, while still allowing legitimate reuse of a
  * still-valid token across concurrent requests for the *same* tenant.
+ *
+ * The key also includes the requested scope: a token minted for the
+ * Distributor API's scope is a different grant than one minted for the
+ * Service Provider API's scope, so a tenant calling both APIs needs two
+ * cached tokens, not one shared between them.
  */
 const tokenCache = new Map<string, CachedToken>();
 
@@ -58,10 +79,10 @@ const tokenCache = new Map<string, CachedToken>();
 const credentialStore = new AsyncLocalStorage<SherwebCredentials>();
 
 /**
- * Derive the tenant cache key from a credential set.
+ * Derive the tenant+scope cache key from a credential set and OAuth scope.
  */
-function tenantKey(creds: SherwebCredentials): string {
-  return `${creds.clientId}::${creds.subscriptionKey}`;
+function tenantKey(creds: SherwebCredentials, scope: string): string {
+  return `${creds.clientId}::${creds.subscriptionKey}::${scope}`;
 }
 
 /**
@@ -100,25 +121,28 @@ export function getCredentials(): SherwebCredentials | null {
 }
 
 /**
- * Authenticate with Sherweb OAuth2 endpoint.
- * Caches the token until expiry.
+ * Authenticate with Sherweb OAuth2 endpoint for a specific scope.
+ * Caches the token (per tenant + scope) until expiry.
  */
-async function authenticate(creds: SherwebCredentials): Promise<string> {
-  const key = tenantKey(creds);
+async function authenticate(
+  creds: SherwebCredentials,
+  scope: string
+): Promise<string> {
+  const key = tenantKey(creds, scope);
 
-  // Return cached token if still valid — scoped to this tenant only.
+  // Return cached token if still valid — scoped to this tenant+scope only.
   const cached = tokenCache.get(key);
   if (cached && Date.now() < cached.tokenExpiry) {
     return cached.accessToken;
   }
 
-  logger.debug("Authenticating with Sherweb OAuth2 endpoint");
+  logger.debug("Authenticating with Sherweb OAuth2 endpoint", { scope });
 
   const body = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: creds.clientId,
     client_secret: creds.clientSecret,
-    scope: "distributor service-provider",
+    scope,
   });
 
   const response = await fetch(SHERWEB_AUTH_URL, {
@@ -150,6 +174,7 @@ async function authenticate(creds: SherwebCredentials): Promise<string> {
   });
 
   logger.info("Sherweb authentication successful", {
+    scope,
     expiresIn: data.expires_in,
   });
 
@@ -174,7 +199,7 @@ export async function distributorRequest<T>(
     );
   }
 
-  const token = await authenticate(creds);
+  const token = await authenticate(creds, DISTRIBUTOR_SCOPE);
   const url = new URL(`${SHERWEB_DISTRIBUTOR_BASE}${path}`);
 
   if (options.params) {
@@ -213,7 +238,14 @@ export async function distributorRequest<T>(
   }
 
   if (!response.ok) {
-    handleApiError(response.status, responseBody, url.toString(), creds);
+    handleApiError(
+      response.status,
+      responseBody,
+      method,
+      url.toString(),
+      creds,
+      DISTRIBUTOR_SCOPE
+    );
   }
 
   return responseBody as T;
@@ -237,7 +269,7 @@ export async function serviceProviderRequest<T>(
     );
   }
 
-  const token = await authenticate(creds);
+  const token = await authenticate(creds, SERVICE_PROVIDER_SCOPE);
   const url = new URL(`${SHERWEB_SERVICE_PROVIDER_BASE}${path}`);
 
   if (options.params) {
@@ -276,20 +308,40 @@ export async function serviceProviderRequest<T>(
   }
 
   if (!response.ok) {
-    handleApiError(response.status, responseBody, url.toString(), creds);
+    handleApiError(
+      response.status,
+      responseBody,
+      method,
+      url.toString(),
+      creds,
+      SERVICE_PROVIDER_SCOPE
+    );
   }
 
   return responseBody as T;
 }
 
 /**
- * Handle API error responses with clear error messages
+ * Handle API error responses with clear error messages.
+ *
+ * Every thrown message includes the request line (method + URL) that
+ * produced it. A 2026-09-08 incident (Epion: customers_list 500,
+ * catalog_list_products 404, billing_payable_charges 404) turned out to be
+ * a stale deployment still serving pre-#67 code — the exact symptom a
+ * dead/wrong-shaped path produces — but the generic `HTTP 404` /
+ * `HTTP 500` messages this function used to throw gave no way to tell that
+ * from a genuine, still-open bug without reading server logs. Surfacing the
+ * request line in the error itself makes that distinction immediate: a
+ * caller (or on-call engineer) can see whether the failing path even
+ * matches what the current source calls.
  */
 function handleApiError(
   status: number,
   responseBody: unknown,
+  method: string,
   url: string,
-  creds: SherwebCredentials
+  creds: SherwebCredentials,
+  scope: string
 ): never {
   const message =
     typeof responseBody === "object" &&
@@ -297,27 +349,30 @@ function handleApiError(
     "message" in responseBody
       ? String((responseBody as Record<string, unknown>).message)
       : `HTTP ${status}`;
+  const request = `${method} ${url}`;
 
-  logger.error("Sherweb API error", { status, url, message });
+  logger.error("Sherweb API error", { status, url, method, message });
 
   if (status === 401) {
-    // Evict only this tenant's cached token on auth failure — never touch
-    // other tenants' entries in the shared tokenCache.
-    tokenCache.delete(tenantKey(creds));
+    // Evict only this tenant+scope's cached token on auth failure — never
+    // touch other tenants' or other scopes' entries in the shared tokenCache.
+    tokenCache.delete(tenantKey(creds, scope));
     throw new Error(
-      `Authentication failed: ${message}. Check your SHERWEB_CLIENT_ID, SHERWEB_CLIENT_SECRET, and SHERWEB_SUBSCRIPTION_KEY.`
+      `Authentication failed: ${message}. Check your SHERWEB_CLIENT_ID, SHERWEB_CLIENT_SECRET, and SHERWEB_SUBSCRIPTION_KEY. (${request})`
     );
   }
   if (status === 403) {
     throw new Error(
-      `Forbidden: ${message}. Insufficient permissions or incorrect scope.`
+      `Forbidden: ${message}. Insufficient permissions or incorrect scope. (${request})`
     );
   }
   if (status === 404) {
-    throw new Error(`Not found: ${message}`);
+    throw new Error(`Not found: ${message} (${request})`);
   }
   if (status === 429) {
-    throw new Error(`Rate limit exceeded: ${message}. Please wait and retry.`);
+    throw new Error(
+      `Rate limit exceeded: ${message}. Please wait and retry. (${request})`
+    );
   }
-  throw new Error(`Sherweb API error (${status}): ${message}`);
+  throw new Error(`Sherweb API error (${status}): ${message} (${request})`);
 }

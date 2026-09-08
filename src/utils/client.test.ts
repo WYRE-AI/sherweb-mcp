@@ -18,7 +18,11 @@
  *     token *values* each tenant receives (not object identity).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { distributorRequest, runWithCredentials } from "./client.js";
+import {
+  distributorRequest,
+  runWithCredentials,
+  serviceProviderRequest,
+} from "./client.js";
 import { SHERWEB_AUTH_URL, type SherwebCredentials } from "./types.js";
 
 interface PingResult {
@@ -60,6 +64,11 @@ function apiResponse(authHeader: string | null): Response {
 function clientIdFromAuthRequest(init: RequestInit | undefined): string | null {
   const body = new URLSearchParams(String(init?.body ?? ""));
   return body.get("client_id");
+}
+
+function scopeFromAuthRequest(init: RequestInit | undefined): string | null {
+  const body = new URLSearchParams(String(init?.body ?? ""));
+  return body.get("scope");
 }
 
 function authHeaderFromApiRequest(init: RequestInit | undefined): string | null {
@@ -185,5 +194,204 @@ describe("Sherweb OAuth token cache — cross-tenant isolation", () => {
     // shared value by coincidence.
     expect(resultA).toEqual({ authHeader: "Bearer token-A-interleave" });
     expect(resultB).toEqual({ authHeader: "Bearer token-B-interleave" });
+  });
+});
+
+/**
+ * Regression coverage for the second half of the 2026-09-08 Epion incident:
+ * `sherweb_customers_list` kept returning a genuine 500 from Sherweb even
+ * after the endpoint-path bug (above/PR #67) was fixed and the request
+ * matched the documented `GetCustomers` contract exactly.
+ *
+ * `authenticate()` requested a single OAuth token with the combined scope
+ * `"distributor service-provider"` for every request, regardless of which
+ * API it was about to call. Sherweb's own Authorization API OpenAPI spec
+ * ("you need to pass a scope depending of which API you are gonna call
+ * afterwards") and its official sample code + Postman collection
+ * (github.com/sherweb/Public-Apis) both request one bare scope value
+ * matching the destination API — e.g. `"distributor"` for the Distributor
+ * API — never a combined string. This pins the corrected behavior: each
+ * request function now asks for only the scope of the API it is calling.
+ */
+describe("Sherweb OAuth token requests scope per API, not combined", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests the bare 'distributor' scope for Distributor API calls", async () => {
+    const creds = tenantCreds("scope-distributor");
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === SHERWEB_AUTH_URL) return oauthResponse("token-distributor");
+      return apiResponse(authHeaderFromApiRequest(init));
+    });
+
+    await runWithCredentials(creds, () => distributorRequest<PingResult>("/ping"));
+
+    const authCall = fetchMock.mock.calls.find(([url]) => url === SHERWEB_AUTH_URL);
+    expect(authCall).toBeDefined();
+    expect(scopeFromAuthRequest(authCall?.[1])).toBe("distributor");
+  });
+
+  it("requests the bare 'service-provider' scope for Service Provider API calls — never the old combined value", async () => {
+    const creds = tenantCreds("scope-service-provider");
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === SHERWEB_AUTH_URL) return oauthResponse("token-sp");
+      return apiResponse(authHeaderFromApiRequest(init));
+    });
+
+    await runWithCredentials(creds, () => serviceProviderRequest<PingResult>("/ping"));
+
+    const authCall = fetchMock.mock.calls.find(([url]) => url === SHERWEB_AUTH_URL);
+    expect(authCall).toBeDefined();
+    expect(scopeFromAuthRequest(authCall?.[1])).toBe("service-provider");
+  });
+
+  it("caches a separate token per scope for the same tenant — calling both APIs authenticates twice, not once", async () => {
+    const creds = tenantCreds("scope-both-apis");
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === SHERWEB_AUTH_URL) {
+        const scope = scopeFromAuthRequest(init);
+        return oauthResponse(`token-for-${scope}`);
+      }
+      return apiResponse(authHeaderFromApiRequest(init));
+    });
+
+    const distResult = await runWithCredentials(creds, () =>
+      distributorRequest<PingResult>("/ping")
+    );
+    const spResult = await runWithCredentials(creds, () =>
+      serviceProviderRequest<PingResult>("/ping")
+    );
+
+    // Each API call got a token scoped to that specific API — a token
+    // minted for one is never silently reused for the other.
+    expect(distResult).toEqual({ authHeader: "Bearer token-for-distributor" });
+    expect(spResult).toEqual({ authHeader: "Bearer token-for-service-provider" });
+
+    const authCalls = fetchMock.mock.calls.filter(([url]) => url === SHERWEB_AUTH_URL);
+    expect(authCalls).toHaveLength(2);
+  });
+});
+
+/**
+ * Regression coverage for the 2026-09-08 Epion incident: customers_list
+ * (500), catalog_list_products (404) and billing_payable_charges (404) all
+ * turned out to be a stale container still serving pre-#67 code — the
+ * request-line evidence needed to tell that from a still-open bug lived
+ * only in `logger.error`, not in the error message a caller (or an
+ * on-call engineer reading a bug report) actually sees. `handleApiError`
+ * now includes the method + URL that failed in every thrown message.
+ */
+describe("Sherweb API error messages include the failing request", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const creds: SherwebCredentials = {
+    clientId: "client",
+    clientSecret: "secret",
+    subscriptionKey: "sub-key",
+  };
+
+  function oauthResponse(): Response {
+    const payload = JSON.stringify({
+      access_token: "token",
+      expires_in: 3600,
+      token_type: "Bearer",
+    });
+    return {
+      ok: true,
+      status: 200,
+      text: async () => payload,
+      json: async () => JSON.parse(payload),
+    } as Response;
+  }
+
+  /** Sherweb's actual undocumented error responses carry no `message` field. */
+  function errorResponse(status: number, body: unknown = ""): Response {
+    const payload = typeof body === "string" ? body : JSON.stringify(body);
+    return {
+      ok: false,
+      status,
+      text: async () => payload,
+      json: async () => JSON.parse(payload),
+    } as Response;
+  }
+
+  function stubApiResponse(response: Response) {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === SHERWEB_AUTH_URL) return oauthResponse();
+      return response;
+    });
+  }
+
+  it("a bare 404 (matching Sherweb's undocumented error shape) names the method and full URL", async () => {
+    stubApiResponse(errorResponse(404));
+
+    await expect(
+      runWithCredentials(creds, () =>
+        serviceProviderRequest("/customer-catalogs/bad-id")
+      )
+    ).rejects.toThrow(
+      "Not found: HTTP 404 (GET https://api.sherweb.com/service-provider/v1/customer-catalogs/bad-id)"
+    );
+  });
+
+  it("a bare 500 names the method and full URL, including any query params that reached Sherweb", async () => {
+    stubApiResponse(errorResponse(500));
+
+    await expect(
+      runWithCredentials(creds, () =>
+        // Reproduces the pre-#67 shape: unsupported params sent to an
+        // endpoint that documents none of them.
+        serviceProviderRequest("/customers", {
+          params: { page: 1, pageSize: 50 },
+        })
+      )
+    ).rejects.toThrow(
+      "Sherweb API error (500): HTTP 500 (GET https://api.sherweb.com/service-provider/v1/customers?page=1&pageSize=50)"
+    );
+  });
+
+  it("a 404 with a documented `message` field still includes the request line alongside it", async () => {
+    stubApiResponse(errorResponse(404, { message: "Resource not found" }));
+
+    await expect(
+      runWithCredentials(creds, () =>
+        distributorRequest("/billing/payable-charges/does-not-exist")
+      )
+    ).rejects.toThrow(
+      "Not found: Resource not found (GET https://api.sherweb.com/distributor/v1/billing/payable-charges/does-not-exist)"
+    );
+  });
+
+  it("401/403/429 messages keep their guidance text and append the request line", async () => {
+    stubApiResponse(errorResponse(403));
+    await expect(
+      runWithCredentials(creds, () => distributorRequest("/billing/payable-charges"))
+    ).rejects.toThrow(
+      "Forbidden: HTTP 403. Insufficient permissions or incorrect scope. (GET https://api.sherweb.com/distributor/v1/billing/payable-charges)"
+    );
+
+    stubApiResponse(errorResponse(429));
+    await expect(
+      runWithCredentials(creds, () => distributorRequest("/billing/payable-charges"))
+    ).rejects.toThrow(
+      "Rate limit exceeded: HTTP 429. Please wait and retry. (GET https://api.sherweb.com/distributor/v1/billing/payable-charges)"
+    );
   });
 });

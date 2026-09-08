@@ -310,6 +310,21 @@ describe("subscription tools call documented Service Provider endpoints", () => 
     // TrackRequest, not the deprecated amendments/{id}/status endpoint.
     expect(soleCall().url).toBe(`${SP}/tracking/track-1`);
   });
+
+  it("amendment_status rejects a missing trackingId before making any request", async () => {
+    stubFetch("Processing");
+
+    // Regression for the same defect class as the 2026-09-08 Epion incident
+    // (see the catalog describe block below): trackingId is interpolated
+    // directly into the URL path (`/tracking/${trackingId}`), so an omitted
+    // argument must never reach Sherweb as the literal string "undefined".
+    await expect(
+      callTool("subscriptions", "sherweb_subscriptions_amendment_status", {}),
+    ).rejects.toThrow(
+      "sherweb_subscriptions_amendment_status: missing required argument 'trackingId'. Provide a non-empty string.",
+    );
+    expect(apiCalls).toHaveLength(0);
+  });
 });
 
 describe("lazy-loading category registry stays in step with the handlers", () => {
@@ -371,5 +386,34 @@ describe("catalog tools call documented Service Provider endpoints", () => {
     expect(soleCall().url).toBe(`${SP}/customer-catalogs/cust-1`);
     expect(result.content[0].text).toContain("Teams Phone");
     expect(result.content[0].text).not.toContain("Exchange Online");
+  });
+
+  it("list_products rejects a missing customerId before making any request", async () => {
+    stubFetch({ customerId: "cust-1", catalogItems: [] });
+
+    // Regression for the 2026-09-08 Epion incident: customerId is
+    // interpolated directly into the URL path, so a caller that omits it
+    // must get a clear validation error instead of Sherweb seeing a literal
+    // `/customer-catalogs/undefined` and returning an opaque 500.
+    await expect(
+      callTool("catalog", "sherweb_catalog_list_products", {}),
+    ).rejects.toThrow(
+      "sherweb_catalog_list_products: missing required argument 'customerId'. Provide a non-empty string.",
+    );
+    expect(apiCalls).toHaveLength(0);
+  });
+
+  it("list_products rejects a non-string customerId before making any request", async () => {
+    stubFetch({ customerId: "cust-1", catalogItems: [] });
+
+    await expect(
+      // A malformed call (e.g. a client that sends a number) — args is
+      // Record<string, unknown>, so this is legal TypeScript but still not
+      // the string requireString() requires.
+      callTool("catalog", "sherweb_catalog_list_products", { customerId: 123 }),
+    ).rejects.toThrow(
+      "sherweb_catalog_list_products: missing required argument 'customerId'. Provide a non-empty string.",
+    );
+    expect(apiCalls).toHaveLength(0);
   });
 });
