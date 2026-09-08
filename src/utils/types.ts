@@ -48,6 +48,37 @@ export function matches(value: unknown, needle: string): boolean {
 }
 
 /**
+ * Read a required string argument out of a tool call's `args`, throwing a
+ * clear, caller-facing error if it is missing, empty, or the wrong type.
+ *
+ * Every domain handler destructures `args` with a bare `as` type assertion
+ * and no runtime check — TypeScript's type system has no effect at runtime,
+ * so a caller who omits a required argument gets a real JS `undefined`.
+ * When that value is a path segment (e.g. `` `/customer-catalogs/${id}` ``),
+ * `undefined` string-interpolates to the literal four-character string
+ * "undefined", which then reaches Sherweb as part of the URL — producing a
+ * confusing upstream error (a 2026-09-08 incident: EpiOn's client omitted
+ * `customerId` on `sherweb_catalog_list_products`, which sent
+ * `/customer-catalogs/undefined` and got back an opaque 500) instead of an
+ * immediate, actionable validation error. Call this for any required
+ * argument that is used to build a request path, before that request is
+ * made — never let a missing argument reach an upstream URL.
+ */
+export function requireString(
+  args: Record<string, unknown>,
+  key: string,
+  toolName: string
+): string {
+  const value = args[key];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(
+      `${toolName}: missing required argument '${key}'. Provide a non-empty string.`
+    );
+  }
+  return value;
+}
+
+/**
  * Shared description of Sherweb's `date` query parameter. Sherweb returns
  * charges per billing period and selects the period from any date inside it.
  */

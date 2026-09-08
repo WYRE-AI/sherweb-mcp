@@ -16,6 +16,7 @@ import {
   errorResult,
   jsonResult,
   matches,
+  requireString,
 } from "../utils/types.js";
 import { serviceProviderRequest } from "../utils/client.js";
 import { logger } from "../utils/logger.js";
@@ -76,10 +77,8 @@ async function handleCall(
 ): Promise<CallToolResult> {
   switch (toolName) {
     case "sherweb_catalog_list_products": {
-      const { customerId, search } = args as {
-        customerId: string;
-        search?: string;
-      };
+      const customerId = requireString(args, "customerId", toolName);
+      const { search } = args as { search?: string };
 
       logger.info("API call: catalog.getCustomerCatalog", {
         customerId,

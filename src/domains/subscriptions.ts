@@ -21,6 +21,7 @@ import {
   errorResult,
   findByKey,
   jsonResult,
+  requireString,
 } from "../utils/types.js";
 import { serviceProviderRequest } from "../utils/client.js";
 import { elicitConfirmation } from "../utils/elicitation.js";
@@ -234,7 +235,7 @@ async function handleCall(
     }
 
     case "sherweb_subscriptions_amendment_status": {
-      const { trackingId } = args as { trackingId: string };
+      const trackingId = requireString(args, "trackingId", toolName);
 
       logger.info("API call: subscriptions.trackRequest", { trackingId });
 

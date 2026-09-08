@@ -66,6 +66,11 @@ function clientIdFromAuthRequest(init: RequestInit | undefined): string | null {
   return body.get("client_id");
 }
 
+function scopeFromAuthRequest(init: RequestInit | undefined): string | null {
+  const body = new URLSearchParams(String(init?.body ?? ""));
+  return body.get("scope");
+}
+
 function authHeaderFromApiRequest(init: RequestInit | undefined): string | null {
   const headers = (init?.headers ?? {}) as Record<string, string>;
   return headers.Authorization ?? null;
@@ -189,6 +194,89 @@ describe("Sherweb OAuth token cache — cross-tenant isolation", () => {
     // shared value by coincidence.
     expect(resultA).toEqual({ authHeader: "Bearer token-A-interleave" });
     expect(resultB).toEqual({ authHeader: "Bearer token-B-interleave" });
+  });
+});
+
+/**
+ * Regression coverage for the second half of the 2026-09-08 Epion incident:
+ * `sherweb_customers_list` kept returning a genuine 500 from Sherweb even
+ * after the endpoint-path bug (above/PR #67) was fixed and the request
+ * matched the documented `GetCustomers` contract exactly.
+ *
+ * `authenticate()` requested a single OAuth token with the combined scope
+ * `"distributor service-provider"` for every request, regardless of which
+ * API it was about to call. Sherweb's own Authorization API OpenAPI spec
+ * ("you need to pass a scope depending of which API you are gonna call
+ * afterwards") and its official sample code + Postman collection
+ * (github.com/sherweb/Public-Apis) both request one bare scope value
+ * matching the destination API — e.g. `"distributor"` for the Distributor
+ * API — never a combined string. This pins the corrected behavior: each
+ * request function now asks for only the scope of the API it is calling.
+ */
+describe("Sherweb OAuth token requests scope per API, not combined", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests the bare 'distributor' scope for Distributor API calls", async () => {
+    const creds = tenantCreds("scope-distributor");
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === SHERWEB_AUTH_URL) return oauthResponse("token-distributor");
+      return apiResponse(authHeaderFromApiRequest(init));
+    });
+
+    await runWithCredentials(creds, () => distributorRequest<PingResult>("/ping"));
+
+    const authCall = fetchMock.mock.calls.find(([url]) => url === SHERWEB_AUTH_URL);
+    expect(authCall).toBeDefined();
+    expect(scopeFromAuthRequest(authCall?.[1])).toBe("distributor");
+  });
+
+  it("requests the bare 'service-provider' scope for Service Provider API calls — never the old combined value", async () => {
+    const creds = tenantCreds("scope-service-provider");
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === SHERWEB_AUTH_URL) return oauthResponse("token-sp");
+      return apiResponse(authHeaderFromApiRequest(init));
+    });
+
+    await runWithCredentials(creds, () => serviceProviderRequest<PingResult>("/ping"));
+
+    const authCall = fetchMock.mock.calls.find(([url]) => url === SHERWEB_AUTH_URL);
+    expect(authCall).toBeDefined();
+    expect(scopeFromAuthRequest(authCall?.[1])).toBe("service-provider");
+  });
+
+  it("caches a separate token per scope for the same tenant — calling both APIs authenticates twice, not once", async () => {
+    const creds = tenantCreds("scope-both-apis");
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === SHERWEB_AUTH_URL) {
+        const scope = scopeFromAuthRequest(init);
+        return oauthResponse(`token-for-${scope}`);
+      }
+      return apiResponse(authHeaderFromApiRequest(init));
+    });
+
+    const distResult = await runWithCredentials(creds, () =>
+      distributorRequest<PingResult>("/ping")
+    );
+    const spResult = await runWithCredentials(creds, () =>
+      serviceProviderRequest<PingResult>("/ping")
+    );
+
+    // Each API call got a token scoped to that specific API — a token
+    // minted for one is never silently reused for the other.
+    expect(distResult).toEqual({ authHeader: "Bearer token-for-distributor" });
+    expect(spResult).toEqual({ authHeader: "Bearer token-for-service-provider" });
+
+    const authCalls = fetchMock.mock.calls.filter(([url]) => url === SHERWEB_AUTH_URL);
+    expect(authCalls).toHaveLength(2);
   });
 });
 
