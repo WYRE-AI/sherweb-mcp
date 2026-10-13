@@ -58,6 +58,7 @@ function urlOf(input: RequestInfo | URL): string {
 
 let realFetch: typeof fetch;
 let fetchMock: ReturnType<typeof vi.fn>;
+let closeServer: (() => Promise<void>) | undefined;
 
 async function postToMcp(
   headers: Record<string, string>,
@@ -130,18 +131,24 @@ beforeAll(async () => {
   process.env.MCP_HTTP_PORT = String(TEST_PORT);
   process.env.MCP_HTTP_HOST = TEST_HOST;
   process.env.CONDUIT_S2S_SECRET = TEST_SECRET;
+  delete process.env.MCP_ALLOW_INSECURE_DEV;
   delete process.env.LAZY_LOADING;
 
-  // index.ts calls main() -> startHttpTransport() unconditionally at
-  // module load (it's the CLI entry point), so importing it is how the
-  // server gets started for this test — same shape as the reference
-  // blumira-mcp probe importing its HTTP entry module in beforeAll.
-  await import("./index.js");
+  // HTTP startup reads CONDUIT_S2S_SECRET when startHttpTransport() runs,
+  // not at import. Vitest skips the CLI entrypoint, so start the listener
+  // explicitly after the env above is in place.
+  const { startHttpTransport } = await import("./index.js");
+  const httpServer = await startHttpTransport();
+  closeServer = () =>
+    new Promise((resolve, reject) => {
+      httpServer.close((err) => (err ? reject(err) : resolve()));
+    });
   await waitForServerReady();
 });
 
-afterAll(() => {
+afterAll(async () => {
   vi.unstubAllGlobals();
+  await closeServer?.();
 });
 
 beforeEach(() => {

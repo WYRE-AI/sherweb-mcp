@@ -7,3 +7,4 @@ dist/
 !src/**
 .env
 .env.*
+!.env.example
