@@ -782,6 +782,100 @@ export async function startHttpTransport(): Promise<HttpServer> {
 }
 
 /**
+ * How long in-flight HTTP requests may finish during shutdown.
+ * Idle keep-alive sockets are closed immediately and do not consume this budget.
+ * After it elapses, remaining sockets are destroyed so SIGTERM cannot wait
+ * until the orchestrator sends SIGKILL.
+ */
+export const HTTP_SHUTDOWN_GRACE_MS = 10_000;
+
+/**
+ * Extra wait after sockets are force-closed. `server.close()` should already
+ * have finished; this bound exists so a stuck close callback still returns.
+ */
+const HTTP_SHUTDOWN_FORCE_SLACK_MS = 1_000;
+
+/**
+ * Stop an HTTP server.
+ *
+ * `close()` alone does not end idle keep-alive sockets, and its callback
+ * waits for every socket. MCP clients often leave those sockets open, which
+ * hangs container shutdown. Idle sockets are closed immediately. Sockets
+ * still serving a request are destroyed after `timeoutMs`.
+ *
+ * Resolves once the server has closed. Rejects when `close` reports an
+ * error (for example the server was not listening).
+ */
+export function shutdownHttpServer(
+  httpServer: HttpServer,
+  timeoutMs: number = HTTP_SHUTDOWN_GRACE_MS,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(graceTimer);
+      clearTimeout(forceTimer);
+      if (error) reject(error);
+      else resolve();
+    };
+
+    const graceTimer = setTimeout(() => {
+      logger.warn("HTTP shutdown grace period elapsed; closing remaining connections", {
+        timeoutMs,
+      });
+      httpServer.closeAllConnections();
+    }, timeoutMs);
+
+    const forceTimer = setTimeout(() => {
+      logger.error("HTTP server close did not finish after remaining connections were destroyed", {
+        timeoutMs,
+      });
+      finish();
+    }, timeoutMs + HTTP_SHUTDOWN_FORCE_SLACK_MS);
+
+    httpServer.close((error) => finish(error));
+    // Node 20+ also does this inside close(). Call it explicitly: idle
+    // keep-alive sockets must not wait on that internal hook, and sockets
+    // closeIdleConnections skips (a response still in progress) are left
+    // for the grace timer above.
+    httpServer.closeIdleConnections();
+  });
+}
+
+/**
+ * Shut the HTTP server down once. A second signal is ignored so a repeat
+ * SIGTERM cannot observe "server is not running" and exit with failure.
+ * Close errors are logged and exit non-zero instead of rejecting unhandled.
+ */
+export function beginHttpShutdown(
+  httpServer: HttpServer,
+  exit: (code: number) => void = (code) => {
+    process.exit(code);
+  },
+  timeoutMs: number = HTTP_SHUTDOWN_GRACE_MS,
+): () => void {
+  let started = false;
+  return () => {
+    if (started) return;
+    started = true;
+    logger.info("Shutting down Sherweb MCP server...");
+    void shutdownHttpServer(httpServer, timeoutMs).then(
+      () => {
+        exit(0);
+      },
+      (error: unknown) => {
+        logger.error("Shutdown failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        exit(1);
+      },
+    );
+  };
+}
+
+/**
  * Main entry point - select transport based on MCP_TRANSPORT env var
  */
 async function main() {
@@ -794,13 +888,7 @@ async function main() {
 
   if (transportType === "http") {
     const httpServer = await startHttpTransport();
-    const shutdown = async () => {
-      logger.info("Shutting down Sherweb MCP server...");
-      await new Promise<void>((resolve, reject) => {
-        httpServer.close((err) => (err ? reject(err) : resolve()));
-      });
-      process.exit(0);
-    };
+    const shutdown = beginHttpShutdown(httpServer);
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
   } else {
