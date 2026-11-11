@@ -395,3 +395,47 @@ describe("Sherweb API error messages include the failing request", () => {
     );
   });
 });
+
+/**
+ * Regression coverage for EpiOn / HS 324105959143: Sherweb support told
+ * Corey their HTTP 500s are sometimes caused by `Accept-Language: *`, and
+ * asked callers to send a concrete value such as `en`. Node's undici
+ * `fetch` adds `accept-language: *` when the request does not set one, and
+ * the client previously set Authorization / subscription-key / Accept but
+ * not Accept-Language. Every outbound request (OAuth and both data APIs)
+ * must now send `Accept-Language: en`.
+ */
+describe("Sherweb requests set Accept-Language: en", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function acceptLanguageFromRequest(init: RequestInit | undefined): string | null {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    return headers["Accept-Language"] ?? headers["accept-language"] ?? null;
+  }
+
+  it("sends Accept-Language: en on the OAuth token request and on both data APIs", async () => {
+    const creds = tenantCreds("accept-language");
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === SHERWEB_AUTH_URL) return oauthResponse("token-al");
+      return apiResponse(authHeaderFromApiRequest(init));
+    });
+
+    await runWithCredentials(creds, () => distributorRequest<PingResult>("/ping"));
+    await runWithCredentials(creds, () => serviceProviderRequest<PingResult>("/ping"));
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(4);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(acceptLanguageFromRequest(init)).toBe("en");
+    }
+  });
+});
+
