@@ -42,6 +42,15 @@ const DISTRIBUTOR_SCOPE = "distributor";
 const SERVICE_PROVIDER_SCOPE = "service-provider";
 
 /**
+ * Sherweb's API can return HTTP 500 when the caller sends
+ * `Accept-Language: *`. Node's undici `fetch` adds that header by default
+ * when the request does not set one (verified on Node 26.13.0 / undici 8.12.2,
+ * which is the current `node:26-alpine` image this Dockerfile uses). Send a
+ * concrete language tag instead.
+ */
+const ACCEPT_LANGUAGE = "en";
+
+/**
  * OAuth2 token cache entry.
  */
 interface CachedToken {
@@ -150,6 +159,7 @@ async function authenticate(
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       "Ocp-Apim-Subscription-Key": creds.subscriptionKey,
+      "Accept-Language": ACCEPT_LANGUAGE,
     },
     body: body.toString(),
   });
@@ -215,6 +225,7 @@ export async function distributorRequest<T>(
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
     Accept: "application/json",
+    "Accept-Language": ACCEPT_LANGUAGE,
     "Ocp-Apim-Subscription-Key": creds.subscriptionKey,
   };
 
@@ -285,6 +296,7 @@ export async function serviceProviderRequest<T>(
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
     Accept: "application/json",
+    "Accept-Language": ACCEPT_LANGUAGE,
     "Ocp-Apim-Subscription-Key": creds.subscriptionKey,
   };
 
