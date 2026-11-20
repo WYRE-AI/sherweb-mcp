@@ -21,7 +21,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: wyre-technology/.github/.github/workflows/mcp-server-ci.yml@adad2aa66a96942bbacac7ed9239017855c9b725
+    uses: WYRE-AI/.github/.github/workflows/mcp-server-ci.yml@542c9ed380fff70fab36234fc222cf9e7a076de9
     with:
       # Node matrix, lint, typecheck, build, unit tests and the
       # process.env credential-mutation guard are all on by default.
