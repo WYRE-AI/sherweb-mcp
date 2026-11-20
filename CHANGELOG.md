@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **HTTP transport fails closed without a real `CONDUIT_S2S_SECRET` (CWE-306).** An empty or known placeholder secret no longer disables `X-Gateway-S2S`. `MCP_ALLOW_INSECURE_DEV=1` is the only local bypass: it skips S2S, logs a warning, and binds `127.0.0.1` only. `AUTH_MODE=gateway` returns 401 when per-request Sherweb credential headers are missing and does not fall back to `SHERWEB_*`. `/health` and `/healthz` stay unauthenticated.
 
 ### Fixed
+- **The HTTP transport no longer exits on a malformed request (WYREAI-741).** The request
+  target was parsed against the client-supplied `Host` header, and a value that does not parse
+  (or a target such as `//`) threw inside the request listener before authentication. The
+  target is now parsed against a fixed base, so `Host` is no longer consulted, and a target
+  that still cannot be parsed gets a `400` JSON response while the server keeps running.
+
 - **HTTP shutdown no longer hangs on idle keep-alive connections.** `server.close()` waited for every socket, so a keep-alive MCP client could block SIGTERM until the orchestrator sent SIGKILL, and a close error became an unhandled rejection. Shutdown now closes idle sockets immediately, destroys any sockets still open after 10 seconds, and exits with a logged error if `close` fails.
 
 ### Fixed
