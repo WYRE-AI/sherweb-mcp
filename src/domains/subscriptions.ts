@@ -193,13 +193,22 @@ async function handleCall(
         quantity: number;
       };
 
-      // Confirm before making changes
+      // Confirm before making changes. Fail closed: the amendment is only
+      // submitted on an explicit human "yes". A decline, a dismissed prompt,
+      // or a client that cannot show confirmation prompts (null) all abort,
+      // because this call changes billing.
       const confirmed = await elicitConfirmation(
         `Are you sure you want to change the quantity of subscription ${subscriptionId} for customer ${customerId} to ${quantity}? This will affect billing.`
       );
 
-      if (confirmed === false) {
-        return jsonResult({ cancelled: true, reason: "Cancelled by user." });
+      if (confirmed !== true) {
+        return jsonResult({
+          cancelled: true,
+          reason:
+            confirmed === false
+              ? "Cancelled by user."
+              : "Not confirmed: the confirmation prompt was declined, dismissed, or is not supported by this MCP client. No change was made.",
+        });
       }
 
       logger.info("API call: subscriptions.createAmendment", {
@@ -243,7 +252,9 @@ async function handleCall(
       // subscription-specific endpoint — it lives under this domain because
       // amendments are currently the only async operation the server submits.
       return jsonResult(
-        await serviceProviderRequest(`/tracking/${trackingId}`)
+        await serviceProviderRequest(
+          `/tracking/${encodeURIComponent(trackingId)}`
+        )
       );
     }
 

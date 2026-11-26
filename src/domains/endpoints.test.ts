@@ -23,6 +23,13 @@ import { getAvailableDomains, getDomainHandler } from "./index.js";
 import { findDomainForTool, listCategories } from "../utils/categories.js";
 import { SHERWEB_AUTH_URL, type SherwebCredentials } from "../utils/types.js";
 
+// change_quantity fails closed without an explicit human "yes"; simulate one
+// here so these tests exercise the request shape, not the confirmation gate
+// (covered in subscriptions.confirm.test.ts).
+vi.mock("../utils/elicitation.js", () => ({
+  elicitConfirmation: vi.fn().mockResolvedValue(true),
+}));
+
 const CREDS: SherwebCredentials = {
   clientId: "client",
   clientSecret: "secret",

@@ -1,0 +1,71 @@
+/**
+ * sherweb_subscriptions_change_quantity changes billing, so it must fail
+ * closed: the amendment is only POSTed on an explicit human "yes".
+ */
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const elicitConfirmation = vi.fn();
+const serviceProviderRequest = vi.fn();
+
+vi.mock("../utils/elicitation.js", () => ({ elicitConfirmation }));
+vi.mock("../utils/client.js", () => ({ serviceProviderRequest }));
+
+const { subscriptionsHandler } = await import("./subscriptions.js");
+
+const args = { customerId: "c-1", subscriptionId: "s-1", quantity: 5 };
+
+function parse(result: { content: Array<{ type: string; text?: string }> }) {
+  return JSON.parse(result.content[0].text ?? "{}");
+}
+
+describe("sherweb_subscriptions_change_quantity confirmation", () => {
+  beforeEach(() => {
+    elicitConfirmation.mockReset();
+    serviceProviderRequest.mockReset();
+    serviceProviderRequest.mockResolvedValue({
+      subscriptionsAmendmentId: "a-1",
+      trackingId: { requestTrackingId: "t-1" },
+    });
+  });
+
+  it.each([
+    ["client without elicitation support", null],
+    ["declined or dismissed prompt", null],
+    ["explicit no", false],
+  ])("does not submit the amendment on %s", async (_label, answer) => {
+    elicitConfirmation.mockResolvedValue(answer);
+
+    const result = await subscriptionsHandler.handleCall(
+      "sherweb_subscriptions_change_quantity",
+      args
+    );
+
+    expect(serviceProviderRequest).not.toHaveBeenCalled();
+    expect(parse(result).cancelled).toBe(true);
+  });
+
+  it("submits the amendment on an explicit yes", async () => {
+    elicitConfirmation.mockResolvedValue(true);
+
+    const result = await subscriptionsHandler.handleCall(
+      "sherweb_subscriptions_change_quantity",
+      args
+    );
+
+    expect(serviceProviderRequest).toHaveBeenCalledTimes(1);
+    expect(parse(result).subscriptionsAmendmentId).toBe("a-1");
+  });
+
+  it("encodes the tracking ID in the status URL", async () => {
+    serviceProviderRequest.mockResolvedValue({});
+
+    await subscriptionsHandler.handleCall(
+      "sherweb_subscriptions_amendment_status",
+      { trackingId: "../customers?x=1" }
+    );
+
+    expect(serviceProviderRequest).toHaveBeenCalledWith(
+      "/tracking/..%2Fcustomers%3Fx%3D1"
+    );
+  });
+});

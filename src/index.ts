@@ -311,6 +311,10 @@ const domainToolMap = new Map<DomainName, Tool[]>();
  */
 let allDomainTools: Tool[] | null = null;
 
+const META_TOOL_NAMES: ReadonlySet<string> = new Set(
+  metaTools.map((t) => t.name)
+);
+
 /**
  * Load all domain tools (lazy-loaded on first access)
  */
@@ -366,6 +370,21 @@ function setupHandlers(server: Server): void {
       // -----------------------------------------------------------------
       // Lazy-loading meta-tool handlers
       // -----------------------------------------------------------------
+
+      // Meta-tools are only advertised in lazy-loading mode; refuse them
+      // otherwise so sherweb_execute_tool cannot be used to reach a tool the
+      // client has denied by name.
+      if (!isLazyLoadingEnabled() && META_TOOL_NAMES.has(name)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Unknown tool: ${name}`,
+            },
+          ],
+          isError: true,
+        };
+      }
 
       if (name === "sherweb_list_categories") {
         const categories = await listCategories();
