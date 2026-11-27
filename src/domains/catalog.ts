@@ -21,6 +21,9 @@ import {
 import { serviceProviderRequest } from "../utils/client.js";
 import { logger } from "../utils/logger.js";
 
+/** Sherweb customer IDs are GUIDs; allow only ID-shaped values in the path. */
+const CUSTOMER_ID_PATTERN = /^[A-Za-z0-9-]+$/;
+
 /** The parts of the CustomerCatalog response this handler reads. */
 interface CatalogItem {
   sku?: string;
@@ -80,13 +83,22 @@ async function handleCall(
       const customerId = requireString(args, "customerId", toolName);
       const { search } = args as { search?: string };
 
+      // customerId is a path segment. Without this check "../customers" or
+      // "../../distributor/..." resolves to another endpoint on the same API
+      // host with the same token.
+      if (!CUSTOMER_ID_PATTERN.test(customerId)) {
+        return errorResult(
+          `${toolName}: invalid customerId '${customerId}'. Expected a Sherweb customer ID from sherweb_customers_list (letters, digits and hyphens only).`
+        );
+      }
+
       logger.info("API call: catalog.getCustomerCatalog", {
         customerId,
         search,
       });
 
       const response = await serviceProviderRequest<CustomerCatalog>(
-        `/customer-catalogs/${customerId}`
+        `/customer-catalogs/${encodeURIComponent(customerId)}`
       );
 
       const needle = (search ?? "").toLowerCase();
