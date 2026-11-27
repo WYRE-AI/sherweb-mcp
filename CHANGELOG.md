@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **Lazy-loading meta-tools only answer when `LAZY_LOADING=true`.** `ListTools` advertised `sherweb_list_categories`, `sherweb_list_category_tools`, `sherweb_execute_tool` and `sherweb_router` only in lazy mode, but the `CallTool` handler served them unconditionally. With lazy mode off, a client that denied a domain tool by name (for example `sherweb_subscriptions_change_quantity`) could still reach it through `sherweb_execute_tool`. The meta-tools now return `Unknown tool` unless `LAZY_LOADING=true`. In lazy mode `sherweb_execute_tool` still dispatches to any domain tool; there is no server-side deny or tier check there yet.
 - **HTTP transport fails closed without a real `CONDUIT_S2S_SECRET` (CWE-306).** An empty or known placeholder secret no longer disables `X-Gateway-S2S`. `MCP_ALLOW_INSECURE_DEV=1` is the only local bypass: it skips S2S, logs a warning, and binds `127.0.0.1` only. `AUTH_MODE=gateway` returns 401 when per-request Sherweb credential headers are missing and does not fall back to `SHERWEB_*`. `/health` and `/healthz` stay unauthenticated.
 
 ### Fixed

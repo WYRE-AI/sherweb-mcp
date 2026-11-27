@@ -30,6 +30,7 @@ Copy [`.env.example`](.env.example) and set the variables below.
 | `MCP_ALLOW_INSECURE_DEV` | No | Set to `1` only for local development to start HTTP without `CONDUIT_S2S_SECRET`. The process logs a warning, does not enforce `X-Gateway-S2S`, and binds `127.0.0.1` only. A non-loopback `MCP_HTTP_HOST` (including `0.0.0.0`) is ignored and the override is logged. A placeholder secret is still refused. |
 | `MCP_HTTP_HOST` | No | Bind address when `MCP_TRANSPORT=http` and `CONDUIT_S2S_SECRET` is set. Defaults to `127.0.0.1`. The container image sets `0.0.0.0`. Without a real secret the listener is `127.0.0.1`. |
 | `MCP_HTTP_PORT` | No | HTTP port. Defaults to `8080`. |
+| `LAZY_LOADING` | No | Set to exactly `true` to expose only the meta-tools (`sherweb_list_categories`, `sherweb_list_category_tools`, `sherweb_execute_tool`, `sherweb_router`) instead of every domain tool. The meta-tools only answer in this mode; otherwise they return `Unknown tool`. In lazy mode `sherweb_execute_tool` can run any domain tool by name, so a client-side deny on an individual tool does not apply to calls made through it. |
 
 `/health` and `/healthz` stay unauthenticated and do not read credentials. The stdio transport does not use `CONDUIT_S2S_SECRET`.
 
