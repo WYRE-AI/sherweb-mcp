@@ -32,6 +32,9 @@ import {
   SUBSCRIPTION_CARD_META,
 } from "../card.builder.js";
 
+/** Sherweb request tracking IDs are GUIDs; allow only ID-shaped values. */
+const TRACKING_ID_PATTERN = /^[A-Za-z0-9-]+$/;
+
 /** Documented response of a successful amendment submission. */
 interface AmendmentReceipt {
   subscriptionsAmendmentId?: string;
@@ -245,6 +248,15 @@ async function handleCall(
 
     case "sherweb_subscriptions_amendment_status": {
       const trackingId = requireString(args, "trackingId", toolName);
+
+      // Sherweb tracking IDs are GUIDs. Reject anything else before building
+      // the URL: encodeURIComponent leaves "." and ".." intact, and URL
+      // resolution would collapse them onto a parent path.
+      if (!TRACKING_ID_PATTERN.test(trackingId)) {
+        return errorResult(
+          `${toolName}: invalid trackingId '${trackingId}'. Expected the ID returned by sherweb_subscriptions_change_quantity (letters, digits and hyphens only).`
+        );
+      }
 
       logger.info("API call: subscriptions.trackRequest", { trackingId });
 

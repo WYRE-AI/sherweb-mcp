@@ -56,16 +56,37 @@ describe("sherweb_subscriptions_change_quantity confirmation", () => {
     expect(parse(result).subscriptionsAmendmentId).toBe("a-1");
   });
 
-  it("encodes the tracking ID in the status URL", async () => {
+});
+
+describe("sherweb_subscriptions_amendment_status trackingId validation", () => {
+  beforeEach(() => {
+    serviceProviderRequest.mockReset();
     serviceProviderRequest.mockResolvedValue({});
+  });
+
+  it.each([".", "..", "../customers", "abc?x=1", "a/b", "a b", "%2e%2e"])(
+    "rejects %j without making a request",
+    async (trackingId) => {
+      const result = await subscriptionsHandler.handleCall(
+        "sherweb_subscriptions_amendment_status",
+        { trackingId }
+      );
+
+      expect(result.isError).toBe(true);
+      expect(serviceProviderRequest).not.toHaveBeenCalled();
+    }
+  );
+
+  it("requests the tracker for a GUID tracking ID", async () => {
+    const trackingId = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
 
     await subscriptionsHandler.handleCall(
       "sherweb_subscriptions_amendment_status",
-      { trackingId: "../customers?x=1" }
+      { trackingId }
     );
 
     expect(serviceProviderRequest).toHaveBeenCalledWith(
-      "/tracking/..%2Fcustomers%3Fx%3D1"
+      `/tracking/${trackingId}`
     );
   });
 });
