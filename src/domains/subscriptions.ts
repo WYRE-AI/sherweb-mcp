@@ -32,6 +32,9 @@ import {
   SUBSCRIPTION_CARD_META,
 } from "../card.builder.js";
 
+/** Sherweb request tracking IDs are GUIDs; allow only ID-shaped values. */
+const TRACKING_ID_PATTERN = /^[A-Za-z0-9-]+$/;
+
 /** Documented response of a successful amendment submission. */
 interface AmendmentReceipt {
   subscriptionsAmendmentId?: string;
@@ -193,13 +196,22 @@ async function handleCall(
         quantity: number;
       };
 
-      // Confirm before making changes
+      // Confirm before making changes. Fail closed: the amendment is only
+      // submitted on an explicit human "yes". A decline, a dismissed prompt,
+      // or a client that cannot show confirmation prompts (null) all abort,
+      // because this call changes billing.
       const confirmed = await elicitConfirmation(
         `Are you sure you want to change the quantity of subscription ${subscriptionId} for customer ${customerId} to ${quantity}? This will affect billing.`
       );
 
-      if (confirmed === false) {
-        return jsonResult({ cancelled: true, reason: "Cancelled by user." });
+      if (confirmed !== true) {
+        return jsonResult({
+          cancelled: true,
+          reason:
+            confirmed === false
+              ? "Cancelled by user."
+              : "Not confirmed: the confirmation prompt was declined, dismissed, or is not supported by this MCP client. No change was made.",
+        });
       }
 
       logger.info("API call: subscriptions.createAmendment", {
@@ -237,13 +249,24 @@ async function handleCall(
     case "sherweb_subscriptions_amendment_status": {
       const trackingId = requireString(args, "trackingId", toolName);
 
+      // Sherweb tracking IDs are GUIDs. Reject anything else before building
+      // the URL: encodeURIComponent leaves "." and ".." intact, and URL
+      // resolution would collapse them onto a parent path.
+      if (!TRACKING_ID_PATTERN.test(trackingId)) {
+        return errorResult(
+          `${toolName}: invalid trackingId '${trackingId}'. Expected the ID returned by sherweb_subscriptions_change_quantity (letters, digits and hyphens only).`
+        );
+      }
+
       logger.info("API call: subscriptions.trackRequest", { trackingId });
 
       // /tracking/{id} is Sherweb's generic request tracker, not a
       // subscription-specific endpoint — it lives under this domain because
       // amendments are currently the only async operation the server submits.
       return jsonResult(
-        await serviceProviderRequest(`/tracking/${trackingId}`)
+        await serviceProviderRequest(
+          `/tracking/${encodeURIComponent(trackingId)}`
+        )
       );
     }
 

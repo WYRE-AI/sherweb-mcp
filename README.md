@@ -134,6 +134,12 @@ List a customer's subscriptions, get one subscription's details, and submit
 quantity amendments. Amendments are **asynchronous**: submitting returns a
 tracking ID, and `sherweb_subscriptions_amendment_status` reports the outcome.
 
+`sherweb_subscriptions_change_quantity` changes billing, so it asks the user to
+confirm through MCP elicitation and submits the amendment only on an explicit
+yes. A declined or dismissed prompt, or a client that cannot show confirmation
+prompts (including stateless HTTP/gateway mode), returns `{ cancelled: true }`
+and nothing is sent to Sherweb.
+
 ## Interactive Subscription Card (MCP Apps)
 
 `sherweb_subscriptions_get` renders as an interactive, read-only card in MCP
