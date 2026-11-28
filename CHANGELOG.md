@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **`sherweb_catalog_list_products` rejects path-like `customerId` values.** The ID was interpolated into `/customer-catalogs/{customerId}` unencoded, so `../customers?x=1` resolved to `/service-provider/v1/customers?x=1` and `../../distributor/...` reached the Distributor API, all on `api.sherweb.com` with the caller's token. `customerId` must now match `[A-Za-z0-9-]+` (Sherweb customer IDs are GUIDs) and is URL-encoded; anything else returns an error before any request is made.
 - **HTTP transport fails closed without a real `CONDUIT_S2S_SECRET` (CWE-306).** An empty or known placeholder secret no longer disables `X-Gateway-S2S`. `MCP_ALLOW_INSECURE_DEV=1` is the only local bypass: it skips S2S, logs a warning, and binds `127.0.0.1` only. `AUTH_MODE=gateway` returns 401 when per-request Sherweb credential headers are missing and does not fall back to `SHERWEB_*`. `/health` and `/healthz` stay unauthenticated.
 
 ### Fixed
