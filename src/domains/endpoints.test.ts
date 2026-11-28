@@ -395,6 +395,21 @@ describe("catalog tools call documented Service Provider endpoints", () => {
     expect(result.content[0].text).not.toContain("Exchange Online");
   });
 
+  it.each([".", "..", "../customers?x=1", "../../distributor/v1/x", "a/b", "%2e%2e"])(
+    "list_products rejects path-like customerId %j before making any request",
+    async (customerId) => {
+      stubFetch({ customerId: "cust-1", catalogItems: [] });
+
+      const result = await callTool("catalog", "sherweb_catalog_list_products", {
+        customerId,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("invalid customerId");
+      expect(apiCalls).toHaveLength(0);
+    },
+  );
+
   it("list_products rejects a missing customerId before making any request", async () => {
     stubFetch({ customerId: "cust-1", catalogItems: [] });
 
